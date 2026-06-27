@@ -42,8 +42,8 @@ const window_h = virtual_h * 3;
 
 // Motion/look in tile units, so changing `tile` rescales the world without
 // altering how it plays.
-const gravity: f32 = 40.0 * tile; // tiles/s^2
-const move_speed: f32 = 3.0 * tile; // tiles/s
+const gravity: f32 = 45.0 * tile; // tiles/s^2
+const move_speed: f32 = 4.4 * tile; // tiles/s
 const push_speed_mult: f32 = 0.6; // fraction of move_speed while shoving a cart
 const max_fall: f32 = 40.0 * tile; // terminal velocity, tiles/s
 const max_dt: f32 = 0.05; // clamp frame time so a hitch can't tunnel the player
@@ -123,12 +123,12 @@ const Dust = struct {
 const crt_curvature: f32 = 0.06;
 const crt_vignette_width: f32 = 0.55;
 const crt_vignette_fade: f32 = 0.5;
-const crt_chrom_ab: f32 = 1.0;
+const crt_chrom_ab: f32 = 1.5;
 const crt_mask_intensity: f32 = 0.25;
 const crt_corner_shape: f32 = 8.0;
 const crt_edge_width: f32 = 0.02;
 const crt_edge_fade: f32 = 0.02;
-const crt_glow_intensity: f32 = 0.05;
+const crt_glow_intensity: f32 = 0.5;
 const crt_glow_radius: f32 = 1.5;
 
 // Player death sequence (physics + input paused throughout): HOLD freezes the
@@ -247,11 +247,10 @@ const sprite_gate_single: Sprite = gate_tblr;
 // Direction a gate retracts when it opens.
 const GateDir = enum { up, down, left, right };
 
-// const gate_open_time: f32 = 0.15; // open/close slide duration
-const gate_open_time: f32 = 0.25; // open/close slide duration
+const gate_open_time: f32 = 0.15; // open/close slide duration
 const gate_stick_out: f32 = 4; // px left visible at the frame edge when fully open
 
-const walk_frame_time: f32 = 0.15; // s/frame while moving
+const walk_frame_time: f32 = 0.12; // s/frame while moving
 const cast_frame_time: f32 = 0.3; // s/frame while casting
 
 // Cast animation (briefly on clone): two cells (4,1)-(5,1), once, cancelled by
@@ -3450,5 +3449,16 @@ fn draw(state: *State) void {
             rl.drawText("Ctrl C/X/V copy/cut/paste", 4, 52, 10, .gray);
         }
         rl.drawText("F5 save  RMB erase  Ctrl+Z undo", 4, 40, 10, .gray);
+
+        // Current room (screen) coordinate. (0,0) is the room containing the world
+        // origin; +x is one room right, +y is one room up. World y grows downward,
+        // so the room's y-index is negated for display.
+        const room_origin = roomOrigin(p.rect.x + p.rect.width / 2, p.rect.y + p.rect.height / 2);
+        const room_x: i32 = @intFromFloat(@round(room_origin.x / virtual_w));
+        const room_y: i32 = -@as(i32, @intFromFloat(@round(room_origin.y / virtual_h)));
+        var buf: [32]u8 = undefined;
+        const coord = std.fmt.bufPrintZ(&buf, "ROOM ({d}, {d})", .{ room_x, room_y }) catch "ROOM (?, ?)";
+        const w = rl.measureText(coord, 10);
+        rl.drawText(coord, virtual_w - w - 4, 4, 10, .ray_white);
     }
 }
