@@ -42,8 +42,9 @@ const window_h = virtual_h * 3;
 
 // Motion/look in tile units, so changing `tile` rescales the world without
 // altering how it plays.
-const gravity: f32 = 45.0 * tile; // tiles/s^2
-const move_speed: f32 = 4.4 * tile; // tiles/s
+const gravity: f32 = 40.0 * tile; // tiles/s^2
+const move_speed: f32 = 4.0 * tile; // tiles/s
+const push_speed_mult: f32 = 0.6; // fraction of move_speed while shoving a cart
 const max_fall: f32 = 40.0 * tile; // terminal velocity, tiles/s
 const max_dt: f32 = 0.05; // clamp frame time so a hitch can't tunnel the player
 const look_dist: f32 = 64.0 * tile; // clone reach
@@ -77,7 +78,7 @@ const particle_gravity: f32 = 18.0 * tile; // tiles/s^2 (lighter than body gravi
 // The solid-white 16x16 atlas cell at (col 4, row 0). We sample a 1x1 sub-rect
 // of it so a particle is one tinted pixel; the cell being solid white means the
 // tint shows through unmodified.
-const sprite_white: Sprite = .{ .col = 4, .row = 0 };
+const sprite_white: Sprite = .{ .col = 0, .row = 0 };
 
 // A 1x1 source rectangle inside the white cell, in atlas pixels — one opaque
 // white texel that `tint` colors.
@@ -122,12 +123,12 @@ const Dust = struct {
 const crt_curvature: f32 = 0.06;
 const crt_vignette_width: f32 = 0.55;
 const crt_vignette_fade: f32 = 0.5;
-const crt_chrom_ab: f32 = 1.5;
+const crt_chrom_ab: f32 = 1.0;
 const crt_mask_intensity: f32 = 0.25;
 const crt_corner_shape: f32 = 8.0;
 const crt_edge_width: f32 = 0.02;
 const crt_edge_fade: f32 = 0.02;
-const crt_glow_intensity: f32 = 0.5;
+const crt_glow_intensity: f32 = 0.05;
 const crt_glow_radius: f32 = 1.5;
 
 // Player death sequence (physics + input paused throughout): HOLD freezes the
@@ -168,84 +169,105 @@ const Sprite = struct {
     }
 };
 
-// Named sprite cells (col, row). Player walk is the top row, (0,0)..(3,0).
+// Named sprite cells (col, row). Player walk is row 1, (0,1)..(3,1); the first
+// frame doubles as the idle pose.
 const player_walk_frames = [_]Sprite{
-    .{ .col = 0, .row = 0 },
-    .{ .col = 1, .row = 0 },
-    .{ .col = 2, .row = 0 },
-    .{ .col = 3, .row = 0 },
+    .{ .col = 0, .row = 1 },
+    .{ .col = 1, .row = 1 },
+    .{ .col = 2, .row = 1 },
+    .{ .col = 3, .row = 1 },
 };
-const sprite_block: Sprite = .{ .col = 1, .row = 1 };
-const sprite_box: Sprite = .{ .col = 2, .row = 1 };
-const sprite_window: Sprite = .{ .col = 3, .row = 1 }; // solid, but the clone ray sees through it
-const sprite_background: Sprite = .{ .col = 0, .row = 1 };
-const sprite_flower: Sprite = .{ .col = 2, .row = 3 }; // decorative, walk-through, cloneable
-const sprite_spike: Sprite = .{ .col = 3, .row = 3 }; // lethal, walk-through, cloneable; rotation is visual-only
+// Brick (formerly "block"): a 16-tile nine-slice at cols 0-3, rows 4-7,
+// auto-selected by neighbours. The default below is the fully-isolated tile
+// (all four edges exposed); instantiate overrides it per placement.
+const sprite_brick: Sprite = .{ .col = 3, .row = 4 }; // brick_tblr
+const sprite_cart: Sprite = .{ .col = 0, .row = 2 }; // (formerly "box"); idle = first frame
+// Cart roll animation: 3 frames (0,2)..(2,2). Advances only while the cart is
+// moving (it's only ever pushed); when it stops it holds the frame it's on.
+const cart_anim_frames = [_]Sprite{
+    .{ .col = 0, .row = 2 },
+    .{ .col = 1, .row = 2 },
+    .{ .col = 2, .row = 2 },
+};
+const cart_anim_frame_time: f32 = 0.08; // s/frame while rolling
+const sprite_window: Sprite = .{ .col = 7, .row = 2 }; // solid, but the clone ray sees through it
+const sprite_background: Sprite = .{ .col = 1, .row = 0 };
+const sprite_flower: Sprite = .{ .col = 5, .row = 2 }; // decorative, walk-through, cloneable
+const sprite_spike: Sprite = .{ .col = 6, .row = 2 }; // lethal, walk-through, cloneable; rotation is visual-only
 
-// Checkpoint: deactivated/idle sprite at (0,4); walking onto it makes it the
-// respawn point. Activating plays a 5-frame animation (0,4)..(4,4) once, then
-// rests on its last frame to read as "active".
-const sprite_checkpoint: Sprite = .{ .col = 0, .row = 4 };
+// Player push animation: two frames at (6,1)-(7,1), played while shoving a cart.
+const player_push_frames = [_]Sprite{
+    .{ .col = 6, .row = 1 },
+    .{ .col = 7, .row = 1 },
+};
+const push_frame_time: f32 = 0.22; // s/frame while pushing
+
+// Book (formerly "checkpoint"): deactivated/idle sprite at (0,3); walking onto
+// it makes it the respawn point. Activating plays the 5-frame "opening"
+// animation (0,3)..(4,3) once, then rests on its last frame (4,3) to read as
+// "active". The book also has a 4-frame "flick" idle at (4,3)..(7,3), wired up
+// separately later.
+const sprite_checkpoint: Sprite = .{ .col = 0, .row = 3 };
 const checkpoint_anim_frames = [_]Sprite{
-    .{ .col = 0, .row = 4 },
-    .{ .col = 1, .row = 4 },
-    .{ .col = 2, .row = 4 },
-    .{ .col = 3, .row = 4 },
-    .{ .col = 4, .row = 4 },
+    .{ .col = 0, .row = 3 },
+    .{ .col = 1, .row = 3 },
+    .{ .col = 2, .row = 3 },
+    .{ .col = 3, .row = 3 },
+    .{ .col = 4, .row = 3 },
 };
 const checkpoint_anim_frame_time: f32 = 0.07; // s/frame for the activation flourish
 
 // Button: unpressed/pressed. Pressed while a body rests on it.
-const sprite_button_up: Sprite = .{ .col = 0, .row = 3 };
-const sprite_button_down: Sprite = .{ .col = 1, .row = 3 };
+const sprite_button_up: Sprite = .{ .col = 3, .row = 2 };
+const sprite_button_down: Sprite = .{ .col = 4, .row = 2 };
 
 // Gate cell sprites, named by which EDGES the cell exposes to the outside of its
 // gate rectangle (T/B/L/R). Covers all 16 combinations so any gate size tiles
-// correctly. Reuses the nine-slice cells (cols 0-2, rows 5-7); the rest are in
-// cols 3-6.
-const gate_none: Sprite = .{ .col = 1, .row = 6 };
-const gate_t: Sprite = .{ .col = 1, .row = 5 };
-const gate_b: Sprite = .{ .col = 1, .row = 7 };
-const gate_l: Sprite = .{ .col = 0, .row = 6 };
-const gate_r: Sprite = .{ .col = 2, .row = 6 };
-const gate_tl: Sprite = .{ .col = 0, .row = 5 };
-const gate_tr: Sprite = .{ .col = 2, .row = 5 };
-const gate_bl: Sprite = .{ .col = 0, .row = 7 };
-const gate_br: Sprite = .{ .col = 2, .row = 7 };
+// correctly. Occupies the 4x4 block at cols 4-7, rows 4-7.
+const gate_none: Sprite = .{ .col = 5, .row = 5 };
+const gate_t: Sprite = .{ .col = 5, .row = 4 };
+const gate_b: Sprite = .{ .col = 5, .row = 6 };
+const gate_l: Sprite = .{ .col = 4, .row = 5 };
+const gate_r: Sprite = .{ .col = 6, .row = 5 };
+const gate_tl: Sprite = .{ .col = 4, .row = 4 };
+const gate_tr: Sprite = .{ .col = 6, .row = 4 };
+const gate_bl: Sprite = .{ .col = 4, .row = 6 };
+const gate_br: Sprite = .{ .col = 6, .row = 6 };
 const gate_tb: Sprite = .{ .col = 5, .row = 7 };
-const gate_lr: Sprite = .{ .col = 3, .row = 6 };
-const gate_tlr: Sprite = .{ .col = 3, .row = 5 };
-const gate_blr: Sprite = .{ .col = 3, .row = 7 };
+const gate_lr: Sprite = .{ .col = 7, .row = 6 };
+const gate_tlr: Sprite = .{ .col = 7, .row = 5 };
+const gate_blr: Sprite = .{ .col = 7, .row = 7 };
 const gate_tbl: Sprite = .{ .col = 4, .row = 7 };
 const gate_tbr: Sprite = .{ .col = 6, .row = 7 };
 // All four edges. Also a 1x1 gate (exposes every side); an open gate slides this
 // off and clips, so no separate "open" sprite is needed.
-const gate_tblr: Sprite = .{ .col = 4, .row = 6 };
+const gate_tblr: Sprite = .{ .col = 7, .row = 4 };
 const sprite_gate_single: Sprite = gate_tblr;
 
 // Direction a gate retracts when it opens.
 const GateDir = enum { up, down, left, right };
 
-const gate_open_time: f32 = 0.15; // open/close slide duration
+// const gate_open_time: f32 = 0.15; // open/close slide duration
+const gate_open_time: f32 = 0.25; // open/close slide duration
 const gate_stick_out: f32 = 4; // px left visible at the frame edge when fully open
 
 const walk_frame_time: f32 = 0.12; // s/frame while moving
 const cast_frame_time: f32 = 0.3; // s/frame while casting
 
-// Cast animation (briefly on clone): reuses walk cells (1,0) and (3,0), once,
-// cancelled by movement.
+// Cast animation (briefly on clone): two cells (4,1)-(5,1), once, cancelled by
+// movement.
 const player_cast_frames = [_]Sprite{
-    .{ .col = 1, .row = 0 },
-    .{ .col = 3, .row = 0 },
+    .{ .col = 4, .row = 1 },
+    .{ .col = 5, .row = 1 },
 };
 
-// Clone spawn mask: a 4-frame black/white mask (row 2, cols 0-3) multiplied into
+// Clone spawn mask: a 4-frame black/white mask (row 0, cols 2-5) multiplied into
 // the clone's alpha by a shader — white keeps, black hides. Scales to any sprite.
 const clone_mask_frames = [_]Sprite{
-    .{ .col = 0, .row = 2 },
-    .{ .col = 1, .row = 2 },
-    .{ .col = 2, .row = 2 },
-    .{ .col = 3, .row = 2 },
+    .{ .col = 2, .row = 0 },
+    .{ .col = 3, .row = 0 },
+    .{ .col = 4, .row = 0 },
+    .{ .col = 5, .row = 0 },
 };
 const clone_mask_frame_time: f32 = 0.06; // materialize
 const clone_vanish_frame_time: f32 = 0.035; // dematerialize (faster)
@@ -272,15 +294,15 @@ const clone_ripple_fs = @embedFile("assets/clone_ripple.fs");
 // behavior; editor/loader pick by size.
 // ===========================================================================
 const Kind = enum(u8) {
-    block = 0,
-    box = 1,
+    brick = 0,
+    cart = 1,
     window = 2,
     button = 3,
     gate_single = 4,
     flower = 5,
     gate_multi = 6,
     spike = 7,
-    checkpoint = 8,
+    book = 8,
 
     pub fn isGate(self: Kind) bool {
         return self == .gate_single or self == .gate_multi;
@@ -306,13 +328,13 @@ const Flags = struct {
 // CLOSED state; the interactive system toggles Entity.solid as a gate opens.
 fn flagsFor(kind: Kind) Flags {
     return switch (kind) {
-        .block => .{ .solid = true, .dynamic = false, .pushable = false, .clonable = true, .see_through = false },
-        .box => .{ .solid = true, .dynamic = true, .pushable = true, .clonable = true, .see_through = false },
+        .brick => .{ .solid = true, .dynamic = false, .pushable = false, .clonable = true, .see_through = false },
+        .cart => .{ .solid = true, .dynamic = true, .pushable = true, .clonable = true, .see_through = false },
         .window => .{ .solid = true, .dynamic = false, .pushable = false, .clonable = false, .see_through = true },
         .button => .{ .solid = false, .dynamic = false, .pushable = false, .clonable = true, .see_through = false },
         .flower => .{ .solid = false, .dynamic = false, .pushable = false, .clonable = true, .see_through = false },
         .spike => .{ .solid = false, .dynamic = false, .pushable = false, .clonable = true, .see_through = false },
-        .checkpoint => .{ .solid = false, .dynamic = false, .pushable = false, .clonable = true, .see_through = false },
+        .book => .{ .solid = false, .dynamic = false, .pushable = false, .clonable = true, .see_through = false },
         .gate_single => .{ .solid = true, .dynamic = false, .pushable = false, .clonable = true, .see_through = false },
         .gate_multi => .{ .solid = true, .dynamic = false, .pushable = false, .clonable = false, .see_through = false },
     };
@@ -322,13 +344,13 @@ fn flagsFor(kind: Kind) Flags {
 // exposed edges) override this at draw time.
 fn spriteFor(kind: Kind) Sprite {
     return switch (kind) {
-        .block => sprite_block,
-        .box => sprite_box,
+        .brick => sprite_brick,
+        .cart => sprite_cart,
         .window => sprite_window,
         .button => sprite_button_up,
         .flower => sprite_flower,
         .spike => sprite_spike,
-        .checkpoint => sprite_checkpoint,
+        .book => sprite_checkpoint,
         .gate_single, .gate_multi => sprite_gate_single,
     };
 }
@@ -374,6 +396,12 @@ const Entity = struct {
     role: Role = .none, // derived from kind at spawn (roleFor)
 
     pressed: bool = false, // button: weight resting on it
+    // Cart roll animation: advances while the cart moves, holds frame when it
+    // stops. `cart_rolled` is set per-frame by physics when the cart's x changed.
+    cart_frame: usize = 0,
+    cart_anim_time: f32 = 0,
+    cart_rolled: bool = false,
+    cart_roll_dir: f32 = 1, // sign of last x-change: +1 rolled right, -1 left
     // Gate openness: 0 = closed (solid), 1 = open (passable). Lerps toward
     // target; the closed sprite slides off in `dir`.
     open_amount: f32 = 0,
@@ -645,24 +673,73 @@ const World = struct {
         var w = World{ .player = .{ .rect = cellRect(doc.start_cell[0], doc.start_cell[1]) } };
         errdefer w.entities.deinit(gpa);
         for (doc.pieces.items) |p| {
-            try instantiatePiece(&w, gpa, p);
+            try instantiatePiece(&w, gpa, doc, p);
         }
         return w;
     }
 };
 
+// True if the doc has a brick piece occupying cell (gx,gy). Used for brick
+// auto-tiling: a brick exposes an edge wherever it has no brick neighbour.
+fn brickAt(doc: *const LevelDoc, gx: i32, gy: i32) bool {
+    for (doc.pieces.items) |p| {
+        if (p.kind == .brick and p.gx == gx and p.gy == gy) return true;
+    }
+    return false;
+}
+
+// Pick the nine-slice brick tile for cell (gx,gy): an edge is EXPOSED when no
+// brick neighbour sits on that side. Mirrors gateSliceSprite's edge packing
+// (T=8 B=4 L=2 R=1) but over neighbour presence instead of rectangle bounds.
+fn brickSliceSprite(doc: *const LevelDoc, gx: i32, gy: i32) Sprite {
+    const top = !brickAt(doc, gx, gy - 1);
+    const bottom = !brickAt(doc, gx, gy + 1);
+    const left = !brickAt(doc, gx - 1, gy);
+    const right = !brickAt(doc, gx + 1, gy);
+    const edges: u4 = (@as(u4, @intFromBool(top)) << 3) |
+        (@as(u4, @intFromBool(bottom)) << 2) |
+        (@as(u4, @intFromBool(left)) << 1) |
+        @as(u4, @intFromBool(right));
+    return switch (edges) {
+        0b0000 => .{ .col = 1, .row = 5 }, // brick_none
+        0b1000 => .{ .col = 1, .row = 4 }, // brick_t
+        0b0100 => .{ .col = 1, .row = 6 }, // brick_b
+        0b0010 => .{ .col = 0, .row = 5 }, // brick_l
+        0b0001 => .{ .col = 2, .row = 5 }, // brick_r
+        0b1010 => .{ .col = 0, .row = 4 }, // brick_tl
+        0b1001 => .{ .col = 2, .row = 4 }, // brick_tr
+        0b0110 => .{ .col = 0, .row = 6 }, // brick_bl
+        0b0101 => .{ .col = 2, .row = 6 }, // brick_br
+        0b1100 => .{ .col = 1, .row = 7 }, // brick_tb
+        0b0011 => .{ .col = 3, .row = 6 }, // brick_lr
+        0b1011 => .{ .col = 3, .row = 5 }, // brick_tlr
+        0b0111 => .{ .col = 3, .row = 7 }, // brick_blr
+        0b1110 => .{ .col = 0, .row = 7 }, // brick_tbl
+        0b1101 => .{ .col = 2, .row = 7 }, // brick_tbr
+        0b1111 => .{ .col = 3, .row = 4 }, // brick_tblr
+    };
+}
+
 // Turn one Piece into live entities — the ONLY place a Piece becomes runtime
 // state. A multi-cell gate spawns one entity per cell with edge-correct art and
-// a shared gate_rect (so it slides as one unit).
-fn instantiatePiece(world: *World, gpa: std.mem.Allocator, p: Piece) !void {
+// a shared gate_rect (so it slides as one unit). Bricks auto-tile against their
+// brick neighbours in the doc.
+fn instantiatePiece(world: *World, gpa: std.mem.Allocator, doc: *const LevelDoc, p: Piece) !void {
     switch (p.kind) {
-        .block, .box, .window, .button, .flower => {
+        .brick => {
+            _ = try world.entities.spawn(gpa, .{
+                .kind = .brick,
+                .rect = cellRect(p.gx, p.gy),
+                .sprite = brickSliceSprite(doc, p.gx, p.gy),
+            });
+        },
+        .cart, .window, .button, .flower => {
             _ = try world.entities.spawn(gpa, .{ .kind = p.kind, .rect = cellRect(p.gx, p.gy) });
         },
-        .checkpoint => {
+        .book => {
             // Checkpoints carry a facing in `dir` (left/right); right flips art.
             _ = try world.entities.spawn(gpa, .{
-                .kind = .checkpoint,
+                .kind = .book,
                 .rect = cellRect(p.gx, p.gy),
                 .dir = p.dir,
             });
@@ -740,21 +817,26 @@ const Player = struct {
     casting: bool = false,
     cast_frame: usize = 0,
     cast_time: f32 = 0,
+    // Set by stepX each frame the player successfully shoves a pushable cart;
+    // reset at the top of applyPhysics. Drives the push animation.
+    pushing: bool = false,
+    push_frame: usize = 0,
+    push_time: f32 = 0,
 };
 
 // Editor placement vocabulary, cycled with number keys / scroll. Maps to Kind
 // via paletteKind; `gate` resolves to single/multi by size; start/eraser aren't kinds.
-const Palette = enum { block, box, window, button, gate, flower, start, eraser, spike, checkpoint, select };
+const Palette = enum { brick, cart, window, button, gate, flower, start, eraser, spike, book, select };
 
 fn paletteKind(p: Palette) ?Kind {
     return switch (p) {
-        .block => .block,
-        .box => .box,
+        .brick => .brick,
+        .cart => .cart,
         .window => .window,
         .button => .button,
         .flower => .flower,
         .spike => .spike,
-        .checkpoint => .checkpoint,
+        .book => .book,
         .gate => .gate_single, // placeholder; real kind chosen by size at placement
         .start, .eraser, .select => null,
     };
@@ -790,7 +872,7 @@ const State = struct {
     // Edit mode: physics/clone paused, mouse places/removes pieces. `palette` is
     // the next placement type.
     edit_mode: bool = false,
-    palette: Palette = .block,
+    palette: Palette = .brick,
     drag_start: ?[2]i32 = null, // rect-drag start cell, or null
     edit_gate_dir: GateDir = .up, // next placed gate's open dir (cycled with R)
     // Last cell a single-cell paint hit, so drag-painting doesn't re-add a cell
@@ -878,7 +960,7 @@ fn serializeDoc(doc: *const LevelDoc, gpa: std.mem.Allocator) ![]u8 {
         const h: u8 = if (p.kind.isGate()) @intCast(p.h) else 1;
         // Gates store their open dir; spikes store their visual rotation in the
         // same byte; everything else writes 0.
-        const dir: u8 = if (p.kind.isGate() or p.kind == .spike or p.kind == .checkpoint) gateDirByte(p.dir) else 0;
+        const dir: u8 = if (p.kind.isGate() or p.kind == .spike or p.kind == .book) gateDirByte(p.dir) else 0;
         try writeRecord(&out, gpa, tag, p.gx, p.gy, w, h, dir);
     }
     return out.toOwnedSlice(gpa);
@@ -944,13 +1026,13 @@ fn parseDoc(gpa: std.mem.Allocator, bytes: []const u8) !?LevelDoc {
         off += 8;
 
         const piece: Piece = switch (tag) {
-            @intFromEnum(Kind.block) => .{ .kind = .block, .gx = gx, .gy = gy },
-            @intFromEnum(Kind.box) => .{ .kind = .box, .gx = gx, .gy = gy },
+            @intFromEnum(Kind.brick) => .{ .kind = .brick, .gx = gx, .gy = gy },
+            @intFromEnum(Kind.cart) => .{ .kind = .cart, .gx = gx, .gy = gy },
             @intFromEnum(Kind.window) => .{ .kind = .window, .gx = gx, .gy = gy },
             @intFromEnum(Kind.button) => .{ .kind = .button, .gx = gx, .gy = gy },
             @intFromEnum(Kind.flower) => .{ .kind = .flower, .gx = gx, .gy = gy },
             @intFromEnum(Kind.spike) => .{ .kind = .spike, .gx = gx, .gy = gy, .dir = gateDirFromByte(dir) },
-            @intFromEnum(Kind.checkpoint) => .{ .kind = .checkpoint, .gx = gx, .gy = gy, .dir = gateDirFromByte(dir) },
+            @intFromEnum(Kind.book) => .{ .kind = .book, .gx = gx, .gy = gy, .dir = gateDirFromByte(dir) },
             gate_disk_tag => blk: {
                 const gw: i32 = if (w == 0) 1 else w;
                 const gh: i32 = if (h == 0) 1 else h;
@@ -997,7 +1079,7 @@ const default_runs = [_]Run{
     .{ .gx = 34, .gy = 11, .count = 2, .dir = .vertical }, // step
 };
 
-const default_box_spawns = [_][2]i32{
+const default_cart_spawns = [_][2]i32{
     .{ 9, 11 }, .{ 10, 11 }, .{ 21, 11 }, .{ 12, 6 },
 };
 
@@ -1011,11 +1093,11 @@ fn buildDefaultDoc(gpa: std.mem.Allocator) !LevelDoc {
         while (n < r.count) : (n += 1) {
             const gx = if (r.dir == .horizontal) r.gx + n else r.gx;
             const gy = if (r.dir == .vertical) r.gy + n else r.gy;
-            try doc.add(gpa, .{ .kind = .block, .gx = gx, .gy = gy });
+            try doc.add(gpa, .{ .kind = .brick, .gx = gx, .gy = gy });
         }
     }
-    for (default_box_spawns) |c| {
-        try doc.add(gpa, .{ .kind = .box, .gx = c[0], .gy = c[1] });
+    for (default_cart_spawns) |c| {
+        try doc.add(gpa, .{ .kind = .cart, .gx = c[0], .gy = c[1] });
     }
 
     // Interactive test pieces: button + single-cell gate + 2x3 multi-cell gate.
@@ -1025,13 +1107,13 @@ fn buildDefaultDoc(gpa: std.mem.Allocator) !LevelDoc {
 
     // Window test: see-through window with a block behind it (clone right through it).
     try doc.add(gpa, .{ .kind = .window, .gx = 8, .gy = 11 });
-    try doc.add(gpa, .{ .kind = .block, .gx = 9, .gy = 11 });
+    try doc.add(gpa, .{ .kind = .brick, .gx = 9, .gy = 11 });
 
     // Decorative flower (walk-through, cloneable, no button effect).
     try doc.add(gpa, .{ .kind = .flower, .gx = 3, .gy = 11 });
 
     // Checkpoint test piece: walk onto it to set the respawn point.
-    try doc.add(gpa, .{ .kind = .checkpoint, .gx = 30, .gy = 11 });
+    try doc.add(gpa, .{ .kind = .book, .gx = 30, .gy = 11 });
 
     return doc;
 }
@@ -1271,6 +1353,7 @@ fn update(state: *State, dt: f32) !void {
     checkCheckpoints(state);
     checkRoomChange(state);
     animatePlayer(state, dt);
+    animateCarts(state, dt);
     animateCheckpoints(state, dt);
     animateSpawnMasks(state, dt);
     updateParticles(state, dt);
@@ -1305,7 +1388,7 @@ fn advanceDeathSeq(state: *State, dt: f32) void {
                 // so the retry starts clean.
                 w.current_room = .{ .x = std.math.floatMax(f32), .y = std.math.floatMax(f32) };
                 checkRoomChange(state);
-                resetBoxes(state);
+                resetCarts(state);
                 w.death_phase = .reveal;
                 w.death_timer = 0;
             }
@@ -1338,7 +1421,7 @@ fn checkRoomChange(state: *State) void {
 fn respawnCell(state: *State) [2]i32 {
     var original: ?[2]i32 = null;
     for (state.entities().slots.items) |s| {
-        if (!s.alive or s.entity.kind != .checkpoint or !s.entity.cp_active) continue;
+        if (!s.alive or s.entity.kind != .book or !s.entity.cp_active) continue;
         const cell = [2]i32{
             @intFromFloat(@round(s.entity.rect.x / tile)),
             @intFromFloat(@round(s.entity.rect.y / tile)),
@@ -1353,7 +1436,7 @@ fn respawnCell(state: *State) [2]i32 {
 // Reset every box (dynamic, non-clone cube) to its spawn position and clear its
 // motion. Called when a checkpoint is activated so each checkpoint is a clean
 // restart state.
-fn resetBoxes(state: *State) void {
+fn resetCarts(state: *State) void {
     for (state.entities().slots.items) |*s| {
         if (!s.alive) continue;
         const e = &s.entity;
@@ -1362,6 +1445,10 @@ fn resetBoxes(state: *State) void {
         e.rect.y = e.spawn_pos.y;
         e.vel = .{ .x = 0, .y = 0 };
         e.on_ground = false;
+        e.cart_frame = 0;
+        e.cart_anim_time = 0;
+        e.cart_rolled = false;
+        e.cart_roll_dir = 1;
     }
 }
 
@@ -1395,7 +1482,7 @@ fn checkpointOrigin(e: Entity) [2]i32 {
 }
 
 fn checkpointTwins(a: Entity, b: Entity) bool {
-    if (a.kind != .checkpoint or b.kind != .checkpoint) return false;
+    if (a.kind != .book or b.kind != .book) return false;
     const oa = checkpointOrigin(a);
     const ob = checkpointOrigin(b);
     return oa[0] == ob[0] and oa[1] == ob[1];
@@ -1431,7 +1518,7 @@ fn checkCheckpoints(state: *State) void {
     // Find the checkpoint the player is standing on, if any.
     var touched: ?usize = null;
     for (state.entities().slots.items, 0..) |s, i| {
-        if (!s.alive or s.entity.kind != .checkpoint) continue;
+        if (!s.alive or s.entity.kind != .book) continue;
         if (overlaps(pr, s.entity.rect)) {
             touched = i;
             break;
@@ -1443,14 +1530,14 @@ fn checkCheckpoints(state: *State) void {
 
     // Deactivate every active checkpoint that is NOT the touched one or its twin.
     for (state.entities().slots.items, 0..) |*s, i| {
-        if (!s.alive or s.entity.kind != .checkpoint or i == idx) continue;
+        if (!s.alive or s.entity.kind != .book or i == idx) continue;
         const o = &s.entity;
         if (o.cp_active and !checkpointTwins(o.*, hit)) cpDeactivate(o);
     }
 
     // Activate the touched checkpoint and any twin (original <-> clone).
     for (state.entities().slots.items, 0..) |*s, i| {
-        if (!s.alive or s.entity.kind != .checkpoint) continue;
+        if (!s.alive or s.entity.kind != .book) continue;
         const o = &s.entity;
         if (i == idx or checkpointTwins(o.*, hit)) {
             if (!o.cp_active) cpActivate(o);
@@ -1460,7 +1547,7 @@ fn checkCheckpoints(state: *State) void {
     // Remember the original's cell as a stable fallback (used if every active
     // checkpoint entity later disappears). The origin cell IS the original's cell.
     state.world.respawn_cell = checkpointOrigin(hit);
-    resetBoxes(state);
+    resetCarts(state);
 }
 
 // Advance any playing checkpoint animation. Activation plays forward (first→last)
@@ -1468,7 +1555,7 @@ fn checkCheckpoints(state: *State) void {
 // on the first (idle) frame. Plays once either way.
 fn animateCheckpoints(state: *State, dt: f32) void {
     for (state.entities().slots.items) |*s| {
-        if (!s.alive or s.entity.kind != .checkpoint) continue;
+        if (!s.alive or s.entity.kind != .book) continue;
         const e = &s.entity;
         if (!e.cp_anim_playing) continue;
         e.cp_anim_time += dt;
@@ -1609,19 +1696,19 @@ fn pasteClipboard(state: *State, gx: i32, gy: i32) !void {
 // or eraser removes, WASD/arrows roam (Shift jumps a screen). Edits mutate the
 // doc, then rebuildWorld reflects them.
 fn updateEdit(state: *State, dt: f32) !void {
-    if (rl.isKeyPressed(.one)) state.palette = .block;
-    if (rl.isKeyPressed(.two)) state.palette = .box;
+    if (rl.isKeyPressed(.one)) state.palette = .brick;
+    if (rl.isKeyPressed(.two)) state.palette = .cart;
     if (rl.isKeyPressed(.three)) state.palette = .window;
     if (rl.isKeyPressed(.four)) state.palette = .button;
     if (rl.isKeyPressed(.five)) state.palette = .gate;
     if (rl.isKeyPressed(.six)) state.palette = .start;
     if (rl.isKeyPressed(.seven)) state.palette = .flower;
     if (rl.isKeyPressed(.eight)) state.palette = .spike;
-    if (rl.isKeyPressed(.nine)) state.palette = .checkpoint;
+    if (rl.isKeyPressed(.nine)) state.palette = .book;
     if (rl.isKeyPressed(.zero)) state.palette = .eraser;
     // Q enters/leaves selection mode (drag a rectangle, then copy/cut/paste).
     if (rl.isKeyPressed(.q)) {
-        state.palette = if (state.palette == .select) .block else .select;
+        state.palette = if (state.palette == .select) .brick else .select;
         state.drag_start = null;
     }
 
@@ -1734,7 +1821,7 @@ fn updateEdit(state: *State, dt: f32) !void {
 
     // Block and gate drag-fill a rectangle (gate → one multi-cell gate);
     // right-drag erases it. Other types paint one cell per hovered cell.
-    const rectangular = state.palette == .block or state.palette == .gate;
+    const rectangular = state.palette == .brick or state.palette == .gate;
 
     if (rectangular) {
         if (rl.isMouseButtonPressed(.left) or rl.isMouseButtonPressed(.right)) {
@@ -1767,7 +1854,7 @@ fn updateEdit(state: *State, dt: f32) !void {
                         while (j < h) : (j += 1) {
                             var i: i32 = 0;
                             while (i < w) : (i += 1) {
-                                try state.doc.add(state.gpa, .{ .kind = .block, .gx = x0 + i, .gy = y0 + j });
+                                try state.doc.add(state.gpa, .{ .kind = .brick, .gx = x0 + i, .gy = y0 + j });
                             }
                         }
                     }
@@ -1803,7 +1890,7 @@ fn updateEdit(state: *State, dt: f32) !void {
                         .spike => state.edit_gate_dir,
                         // Collapse the 4-way editor dir to a checkpoint facing:
                         // only `.right` flips; anything else faces left (normal).
-                        .checkpoint => if (state.edit_gate_dir == .right) .right else .left,
+                        .book => if (state.edit_gate_dir == .right) .right else .left,
                         else => .up,
                     };
                     try state.doc.add(state.gpa, .{ .kind = kind, .gx = gx, .gy = gy, .dir = dir });
@@ -2128,11 +2215,45 @@ fn animateSpawnMasks(state: *State, dt: f32) void {
 
 // Drive the player animation: movement plays the walk cycle and cancels a cast;
 // otherwise a cast (from cloning) plays once; otherwise idle on frame 0.
+// Advance each cart's roll animation while it moved this frame; when stopped it
+// holds whatever frame it's on (no reset).
+fn animateCarts(state: *State, dt: f32) void {
+    for (state.entities().slots.items) |*s| {
+        if (!s.alive or s.entity.kind != .cart) continue;
+        const e = &s.entity;
+        if (!e.cart_rolled) continue; // stopped: hold current frame
+        const n = cart_anim_frames.len;
+        e.cart_anim_time += dt;
+        while (e.cart_anim_time >= cart_anim_frame_time) {
+            e.cart_anim_time -= cart_anim_frame_time;
+            if (e.cart_roll_dir >= 0) {
+                e.cart_frame = (e.cart_frame + 1) % n;
+            } else {
+                // Step backward, wrapping 0 -> last (usize can't go negative).
+                e.cart_frame = (e.cart_frame + n - 1) % n;
+            }
+        }
+    }
+}
+
 fn animatePlayer(state: *State, dt: f32) void {
     const p = state.player();
 
     if (p.moving) {
         p.casting = false;
+        if (p.pushing) {
+            // Pushing a cart: cycle the push frames instead of the walk cycle.
+            p.anim_frame = 0;
+            p.anim_time = 0;
+            p.push_time += dt;
+            while (p.push_time >= push_frame_time) {
+                p.push_time -= push_frame_time;
+                p.push_frame = (p.push_frame + 1) % player_push_frames.len;
+            }
+            return;
+        }
+        p.push_frame = 0;
+        p.push_time = 0;
         p.anim_time += dt;
         while (p.anim_time >= walk_frame_time) {
             p.anim_time -= walk_frame_time;
@@ -2143,6 +2264,8 @@ fn animatePlayer(state: *State, dt: f32) void {
 
     p.anim_frame = 0;
     p.anim_time = 0;
+    p.push_frame = 0;
+    p.push_time = 0;
 
     if (p.casting) {
         p.cast_time += dt;
@@ -2164,9 +2287,29 @@ fn handleInput(state: *State) void {
     var dir: f32 = 0;
     if (rl.isKeyDown(.left) or rl.isKeyDown(.a)) dir -= 1;
     if (rl.isKeyDown(.right) or rl.isKeyDown(.d)) dir += 1;
-    p.vel.x = dir * move_speed;
+
+    // Pushing = holding a direction with a pushable cart in the pixel directly
+    // ahead. Derived from intent + adjacency, NOT from whole-pixel motion: the
+    // player's speed banks sub-pixels in rem.x, so some frames move zero pixels
+    // even while shoving — keying off motion would flicker the anim and speed.
+    p.pushing = dir != 0 and cartDirectlyAhead(state, dir);
+
+    // Pushing a cart slows the walk.
+    const speed = if (p.pushing) move_speed * push_speed_mult else move_speed;
+    p.vel.x = dir * speed;
     p.moving = dir != 0;
     if (dir != 0) p.facing = dir;
+}
+
+// True if a pushable cart sits in the 1px-ahead probe of the player in `dir`
+// (and nothing unpushable blocks first). Mirrors stepX's push test so the push
+// state matches what physics will actually do this frame.
+fn cartDirectlyAhead(state: *State, dir: f32) bool {
+    const pb: Body = .player;
+    var probe = state.world.player.rect;
+    probe.x += if (dir > 0) 1 else -1;
+    if (!blocked(state, pb, probe, null)) return false; // free ahead: not pushing
+    return pushableAhead(state, pb, probe) != null;
 }
 
 // ===========================================================================
@@ -2437,6 +2580,12 @@ fn applyPhysics(state: *State, dt: f32) void {
         order[k] = v;
     }
 
+    // Snapshot x before any body moves: a cart can be shoved inside the player's
+    // stepX (push recursion), not just in its own iteration, so a before/after
+    // compare over the whole physics pass is the reliable "rolled" signal.
+    var pre_x: [max_bodies]f32 = undefined;
+    for (order[0..n], 0..) |i, oi| pre_x[oi] = slots[i].entity.rect.x;
+
     for (order[0..n]) |i| {
         const b: Body = .{ .entity = i };
         const e = &slots[i].entity;
@@ -2458,6 +2607,14 @@ fn applyPhysics(state: *State, dt: f32) void {
     _ = stepX(state, pb, pdx, 0);
     stepY(state, pb, pdy);
     p.on_ground = restingOnGround(state, pb);
+
+    // After all movement (incl. push recursion via the player's stepX), mark
+    // which dynamic bodies actually changed x this frame. animateCarts reads it.
+    for (order[0..n], 0..) |i, oi| {
+        const dx = slots[i].entity.rect.x - pre_x[oi];
+        slots[i].entity.cart_rolled = dx != 0;
+        if (dx != 0) slots[i].entity.cart_roll_dir = if (dx > 0) 1 else -1;
+    }
 }
 
 // React to action keys (currently just clone).
@@ -2542,7 +2699,7 @@ fn tryClone(state: *State) !void {
     clone.cp_anim_reverse = false;
     clone.cp_anim_frame = 0;
     clone.cp_anim_time = 0;
-    if (clone.kind == .checkpoint) {
+    if (clone.kind == .book) {
         clone.cp_origin = src_ptr.cp_origin orelse .{
             @intFromFloat(@round(src_ptr.rect.x / tile)),
             @intFromFloat(@round(src_ptr.rect.y / tile)),
@@ -2944,6 +3101,28 @@ fn drawSpriteRotated(atlas: rl.Texture2D, sprite: Sprite, dest: rl.Rectangle, ti
 // (so multi-cell gates move together), clipped at the gate's frame edge. A
 // gate_stick_out sliver is left visible even when fully open. Source and dest
 // sub-rects match in size, so the sprite slides rigidly without scaling.
+// Map a gate's linear open_amount (0..1) to an eased slide position that SLAMS:
+// motion is slow at the start of a transition and accelerates into the endpoint,
+// so a gate whips open and bangs shut instead of sliding at constant speed. The
+// direction of travel (open vs close) is read from prev_open_amount, easing
+// toward whichever end the gate is heading for. Fully-settled gates (no change)
+// pass through uneased.
+fn gateSlamEase(e: Entity) f32 {
+    const a = e.open_amount;
+    const closing = a < e.prev_open_amount;
+    const opening = a > e.prev_open_amount;
+    if (opening) {
+        // Heading to 1 (open): ease-in, accelerating as it nears fully open.
+        return a * a * a;
+    } else if (closing) {
+        // Heading to 0 (closed): ease-in toward 0 — slow release, hard slam.
+        // Equivalent to flipping the ease-in curve around the 1->0 direction.
+        const inv = 1 - a;
+        return 1 - inv * inv * inv;
+    }
+    return a; // settled (0 or 1): no easing needed
+}
+
 fn drawGateSlide(atlas: rl.Texture2D, e: Entity) void {
     const g = e.gate_rect;
     const c = e.rect;
@@ -2953,7 +3132,7 @@ fn drawGateSlide(atlas: rl.Texture2D, e: Entity) void {
         .up, .down => g.height,
         .left, .right => g.width,
     };
-    const o = e.open_amount * (axis_len - gate_stick_out); // slide distance
+    const o = gateSlamEase(e) * (axis_len - gate_stick_out); // eased slide distance
 
     var src = s0;
     var dst = c;
@@ -3021,7 +3200,7 @@ fn drawEntity(state: *State, e: Entity) void {
     // Checkpoint: idle sprite when inactive; the activation flourish plays once
     // and rests on the last (active) frame, the deactivation flourish plays in
     // reverse and rests on the idle frame. `dir == .right` mirrors all art.
-    if (e.kind == .checkpoint) {
+    if (e.kind == .book) {
         const spr = if (e.cp_anim_playing)
             checkpoint_anim_frames[e.cp_anim_frame]
         else if (e.cp_active)
@@ -3034,7 +3213,7 @@ fn drawEntity(state: *State, e: Entity) void {
 
     const spr = switch (e.role) {
         .button => if (e.pressed) sprite_button_down else sprite_button_up,
-        .none, .gate => e.sprite,
+        .none, .gate => if (e.kind == .cart) cart_anim_frames[e.cart_frame] else e.sprite,
     };
 
     const gate_opening = e.role == .gate and e.open_amount > 0 and e.mask_phase == .none;
@@ -3147,6 +3326,8 @@ fn draw(state: *State) void {
     if (dp != .hold and dp != .cover) {
         const player_sprite = if (p.casting)
             player_cast_frames[p.cast_frame]
+        else if (p.pushing)
+            player_push_frames[p.push_frame]
         else
             player_walk_frames[p.anim_frame];
         drawSprite(state.atlas, player_sprite, p.rect, .white, p.facing < 0);
@@ -3227,15 +3408,15 @@ fn draw(state: *State) void {
     // Edit-mode palette label (screen space).
     if (state.edit_mode) {
         const name = switch (state.palette) {
-            .block => "1:BLOCK",
-            .box => "2:BOX",
+            .brick => "1:BRICK",
+            .cart => "2:CART",
             .window => "3:WINDOW",
             .button => "4:BUTTON",
             .gate => "5:GATE",
             .start => "6:START",
             .flower => "7:FLOWER",
             .spike => "8:SPIKE",
-            .checkpoint => "9:CHECKPOINT",
+            .book => "9:BOOK",
             .eraser => "0:ERASER",
             .select => "Q:SELECT",
         };
@@ -3259,7 +3440,7 @@ fn draw(state: *State) void {
             };
             rl.drawText(rot, 4, 28, 10, .yellow);
         }
-        if (state.palette == .checkpoint) {
+        if (state.palette == .book) {
             // Only .right flips; everything else faces left.
             const face = if (state.edit_gate_dir == .right) "R:face RIGHT" else "R:face LEFT";
             rl.drawText(face, 4, 28, 10, .yellow);
