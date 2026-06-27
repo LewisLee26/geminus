@@ -42,8 +42,8 @@ const window_h = virtual_h * 3;
 
 // Motion/look in tile units, so changing `tile` rescales the world without
 // altering how it plays.
-const gravity: f32 = 45.0 * tile; // tiles/s^2
-const move_speed: f32 = 4.4 * tile; // tiles/s
+const gravity: f32 = 40.0 * tile; // tiles/s^2
+const move_speed: f32 = 3.0 * tile; // tiles/s
 const push_speed_mult: f32 = 0.6; // fraction of move_speed while shoving a cart
 const max_fall: f32 = 40.0 * tile; // terminal velocity, tiles/s
 const max_dt: f32 = 0.05; // clamp frame time so a hitch can't tunnel the player
@@ -123,12 +123,12 @@ const Dust = struct {
 const crt_curvature: f32 = 0.06;
 const crt_vignette_width: f32 = 0.55;
 const crt_vignette_fade: f32 = 0.5;
-const crt_chrom_ab: f32 = 1.5;
+const crt_chrom_ab: f32 = 0.5;
 const crt_mask_intensity: f32 = 0.25;
 const crt_corner_shape: f32 = 8.0;
 const crt_edge_width: f32 = 0.02;
 const crt_edge_fade: f32 = 0.02;
-const crt_glow_intensity: f32 = 0.5;
+const crt_glow_intensity: f32 = 0.1;
 const crt_glow_radius: f32 = 1.5;
 
 // Player death sequence (physics + input paused throughout): HOLD freezes the
@@ -250,7 +250,7 @@ const GateDir = enum { up, down, left, right };
 const gate_open_time: f32 = 0.15; // open/close slide duration
 const gate_stick_out: f32 = 4; // px left visible at the frame edge when fully open
 
-const walk_frame_time: f32 = 0.12; // s/frame while moving
+const walk_frame_time: f32 = 0.15; // s/frame while moving
 const cast_frame_time: f32 = 0.3; // s/frame while casting
 
 // Cast animation (briefly on clone): two cells (4,1)-(5,1), once, cancelled by
