@@ -43,7 +43,7 @@ const window_h = virtual_h * 3;
 // Motion/look in tile units, so changing `tile` rescales the world without
 // altering how it plays.
 const gravity: f32 = 40.0 * tile; // tiles/s^2
-const move_speed: f32 = 4.0 * tile; // tiles/s
+const move_speed: f32 = 3.0 * tile; // tiles/s
 const push_speed_mult: f32 = 0.6; // fraction of move_speed while shoving a cart
 const max_fall: f32 = 40.0 * tile; // terminal velocity, tiles/s
 const max_dt: f32 = 0.05; // clamp frame time so a hitch can't tunnel the player
@@ -251,7 +251,7 @@ const GateDir = enum { up, down, left, right };
 const gate_open_time: f32 = 0.25; // open/close slide duration
 const gate_stick_out: f32 = 4; // px left visible at the frame edge when fully open
 
-const walk_frame_time: f32 = 0.12; // s/frame while moving
+const walk_frame_time: f32 = 0.15; // s/frame while moving
 const cast_frame_time: f32 = 0.3; // s/frame while casting
 
 // Cast animation (briefly on clone): two cells (4,1)-(5,1), once, cancelled by
