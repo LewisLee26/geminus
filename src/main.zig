@@ -1,5 +1,10 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const rl = @import("raylib");
+
+// Edit mode is a development tool, gated to debug builds. In release builds the
+// Tab toggle is compiled out, so the level editor is unreachable.
+const edit_enabled = builtin.mode == .Debug;
 
 // ---------------------------------------------------------------------------
 // Clone Game — a 2D puzzle-platformer. The player walks and falls; there is no
@@ -1306,7 +1311,7 @@ fn presentScaled(target: rl.RenderTexture2D) void {
 }
 
 fn update(state: *State, dt: f32) !void {
-    if (rl.isKeyPressed(.tab)) {
+    if (edit_enabled and rl.isKeyPressed(.tab)) {
         const leaving_edit = state.edit_mode;
         state.edit_mode = !state.edit_mode;
         // Abandon any in-flight death sequence on a mode switch.
