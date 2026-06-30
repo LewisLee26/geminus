@@ -217,6 +217,18 @@ const checkpoint_anim_frames = [_]Sprite{
 };
 const checkpoint_anim_frame_time: f32 = 0.07; // s/frame for the activation flourish
 
+// Book "flick" idle: a 4-frame flourish at (4,3)..(7,3), played when the player
+// walks back onto an already-active book (which also resets the carts, like
+// death). Begins and ends on (4,3), the active rest frame, so it reads as the
+// book riffling its pages and settling back open.
+const checkpoint_flick_frames = [_]Sprite{
+    .{ .col = 4, .row = 3 },
+    .{ .col = 5, .row = 3 },
+    .{ .col = 6, .row = 3 },
+    .{ .col = 7, .row = 3 },
+};
+const checkpoint_flick_frame_time: f32 = 0.07; // s/frame for the re-touch flick
+
 // Button: unpressed/pressed. Pressed while a body rests on it.
 const sprite_button_up: Sprite = .{ .col = 3, .row = 2 };
 const sprite_button_down: Sprite = .{ .col = 4, .row = 2 };
@@ -432,6 +444,12 @@ const Entity = struct {
     cp_anim_frame: usize = 0,
     cp_origin: ?[2]i32 = null,
     cp_anim_time: f32 = 0,
+    // Re-touch "flick": plays once over checkpoint_flick_frames when the player
+    // walks back onto an already-active book. Cosmetic; independent of the
+    // activation flourish above so a flick never disturbs cp_active state.
+    cp_flick_playing: bool = false,
+    cp_flick_frame: usize = 0,
+    cp_flick_time: f32 = 0,
 };
 
 // Stable entity reference. `gen` disambiguates slot reuse: on free, the slot's
@@ -661,6 +679,11 @@ const World = struct {
     // Active checkpoint cell, or null to fall back to the level's start cell.
     // Set when the player walks onto a checkpoint; respawn reads it.
     respawn_cell: ?[2]i32 = null,
+
+    // Origin cell of the book the player was standing on last frame, or null if
+    // none. Identifies a book by its twin-stable origin so the re-touch flick +
+    // cart reset fire once on step-on and only repeat after stepping off and back.
+    standing_book: ?[2]i32 = null,
 
     fn deinit(self: *World, gpa: std.mem.Allocator) void {
         self.entities.deinit(gpa);
@@ -1388,6 +1411,11 @@ fn advanceDeathSeq(state: *State, dt: f32) void {
                 w.current_room = .{ .x = std.math.floatMax(f32), .y = std.math.floatMax(f32) };
                 checkRoomChange(state);
                 resetCarts(state);
+                // The player respawns standing on the active checkpoint; mark it
+                // as already-occupied so the re-touch flick/reset doesn't fire on
+                // the first frame back. (A non-checkpoint start cell sets a
+                // harmless origin that the next real step-on overrides.)
+                w.standing_book = cell;
                 w.death_phase = .reveal;
                 w.death_timer = 0;
             }
@@ -1505,6 +1533,14 @@ fn cpDeactivate(e: *Entity) void {
     e.cp_anim_time = 0;
 }
 
+// Begin a checkpoint's re-touch flick. Cosmetic only: leaves cp_active and the
+// activation flourish untouched, just runs checkpoint_flick_frames once.
+fn cpFlick(e: *Entity) void {
+    e.cp_flick_playing = true;
+    e.cp_flick_frame = 0;
+    e.cp_flick_time = 0;
+}
+
 // Activate a checkpoint when the player walks onto it. The touched checkpoint AND
 // its twin (an original and any clone of it) both activate, so stepping on a
 // cloned checkpoint lights up the original too. Any unrelated active checkpoints
@@ -1523,9 +1559,33 @@ fn checkCheckpoints(state: *State) void {
             break;
         }
     }
-    const idx = touched orelse return;
+    const idx = touched orelse {
+        // Not on any book this frame: clear so the next step-on counts as fresh.
+        state.world.standing_book = null;
+        return;
+    };
     const hit = state.entities().slots.items[idx].entity;
-    if (hit.cp_active) return; // already current (twin would be too)
+    const origin = checkpointOrigin(hit);
+
+    // Already standing on this same book (by twin-stable origin) since last frame:
+    // nothing to do until the player steps off and back on.
+    if (state.world.standing_book) |prev| {
+        if (prev[0] == origin[0] and prev[1] == origin[1]) return;
+    }
+    state.world.standing_book = origin;
+
+    if (hit.cp_active) {
+        // Stepping back onto the already-active book: it stays the respawn point,
+        // but acts like a soft reset — replay the cart layout (as on death) and
+        // play the flick flourish on this book and its twin. Fires once per
+        // step-on (guarded by standing_book above).
+        for (state.entities().slots.items) |*s| {
+            if (!s.alive or s.entity.kind != .book) continue;
+            if (checkpointTwins(s.entity, hit)) cpFlick(&s.entity);
+        }
+        resetCarts(state);
+        return;
+    }
 
     // Deactivate every active checkpoint that is NOT the touched one or its twin.
     for (state.entities().slots.items, 0..) |*s, i| {
@@ -1556,6 +1616,20 @@ fn animateCheckpoints(state: *State, dt: f32) void {
     for (state.entities().slots.items) |*s| {
         if (!s.alive or s.entity.kind != .book) continue;
         const e = &s.entity;
+        // Re-touch flick: independent one-shot over checkpoint_flick_frames,
+        // resting back on the active frame when done.
+        if (e.cp_flick_playing) {
+            e.cp_flick_time += dt;
+            while (e.cp_flick_time >= checkpoint_flick_frame_time) {
+                e.cp_flick_time -= checkpoint_flick_frame_time;
+                if (e.cp_flick_frame + 1 >= checkpoint_flick_frames.len) {
+                    e.cp_flick_playing = false; // rest back on the active frame
+                    e.cp_flick_frame = 0;
+                    break;
+                }
+                e.cp_flick_frame += 1;
+            }
+        }
         if (!e.cp_anim_playing) continue;
         e.cp_anim_time += dt;
         while (e.cp_anim_time >= checkpoint_anim_frame_time) {
@@ -2698,6 +2772,9 @@ fn tryClone(state: *State) !void {
     clone.cp_anim_reverse = false;
     clone.cp_anim_frame = 0;
     clone.cp_anim_time = 0;
+    clone.cp_flick_playing = false;
+    clone.cp_flick_frame = 0;
+    clone.cp_flick_time = 0;
     if (clone.kind == .book) {
         clone.cp_origin = src_ptr.cp_origin orelse .{
             @intFromFloat(@round(src_ptr.rect.x / tile)),
@@ -3202,6 +3279,8 @@ fn drawEntity(state: *State, e: Entity) void {
     if (e.kind == .book) {
         const spr = if (e.cp_anim_playing)
             checkpoint_anim_frames[e.cp_anim_frame]
+        else if (e.cp_flick_playing)
+            checkpoint_flick_frames[e.cp_flick_frame]
         else if (e.cp_active)
             checkpoint_anim_frames[checkpoint_anim_frames.len - 1]
         else
